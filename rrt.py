@@ -12,20 +12,27 @@ K = 1. # (C_D - C_D_0) / C_L^2
 A = (m, S_ref, C_L_0, C_L_alpha, C_D_0, K)
 
 ##### Motion Primitive Set #####
-R = 80. # Radius of curvature in m
+R = 100. # Radius of curvature in m
 V_max = 30. # Max veocity in m/s
 a_max = 9.8 # Max acceleration in m/s^2
 R_min = V_max**2/a_max # Minimum turning radius
 theta_1_set = np.radians(-25 + 5. * np.arange(10)) # In radians
 theta_2_set = np.radians(-50 + 10. * np.arange(10)) # In radians
+N_prim = 3
 
 ##### Waypoints #####
 p_init = np.array([0,0]).reshape(2, 1)
 e_init = np.array([0., 1.]).reshape(2, 1)
 x_init = (p_init, e_init)
-p_goal = np.array([10,10]).reshape(2, 1)
-T_arrival = 1.
-R_goal = 1.
+p_goal = np.array([400,500.]).reshape(2, 1)
+x_goal = (p_goal, e_init)
+T_arrival = 10.
+R_goal = 100.
+
+##### Cost #####
+c1 = 1.
+c2 = 1.
+c3 = 1.
 
 
 def _bezier(P, T):
@@ -88,10 +95,10 @@ def steer(p_nearest, p_rand):
 		return p_nearest + (p_rand - p_nearest)*R/np.linalg.norm(p_rand - p_nearest)
 	return p_rand
 
-def get_primitive_set(x):
+def get_primitive_set(x, T=T_arrival):
 	X_set = []
 	for i in range(len(theta_1_set)):
-		P, e_f = get_primitive(x, T_arrival, theta_1_set[i], theta_2_set[i])
+		P, e_f = get_primitive(x, T, theta_1_set[i], theta_2_set[i])
 		X_set.append((P[-1], e_f))
 	return X_set
 
@@ -104,7 +111,7 @@ def is_collision(x_1, x_2):
 	return False
 
 def extend_tree(G, p_rand):
-	V_prime, V_prime_goal, E_prime = G[-1]
+	V_prime, V_prime_goal, E_prime = G
 	x_nearest = get_nearest(V_prime, p_rand)
 	(p_nearest, _) = x_nearest
 	if np.linalg.norm(p_nearest - p_goal) < R_goal:
@@ -122,7 +129,70 @@ def extend_tree(G, p_rand):
 	return (V_prime, V_prime_goal, E_prime)
 
 def get_sample(i):
-	return -10 + 10 * np.random.rand(2,1)
+	return 1000 * np.random.rand(2,1)
+
+def visualize_tree(E):
+	fig, ax = plt.subplots()
+	edges = np.array([np.array([p1, p2]).squeeze().T for ((p1, e1), (p2, e2)) in E])
+	for e in edges:
+		ax.plot(e[0, :], e[1, :], "r-")
+		ax.plot(e[0, :], e[1, :], "g.")
+	ax.plot(p_goal[0], p_goal[1], "ro")
+	plt.show()
+
+def tree_depth(x):
+	# TODO: Implement this
+	return 0.
+
+def get_vertex_cost(x_goalarea, x_goal):
+	(p_goal, e_goal) = x_goal
+	(p_goalarea, _) = x_goalarea
+	e_to_goal = ((p_goalarea - p_goal)/np.linalg.norm(p_goalarea - p_goal)).T
+	e_ref = (2*e_to_goal - e_goal).T
+	x_cost = c1/(1+e_to_goal.dot(e_goal)) + c2/(1+e_to_goal.dot(e_ref)) + c3*tree_depth(x_goalarea) - (c1+c2)/2
+
+def get_cost(G, x_goal):
+	J = []
+	(V, V_goal, E) = G
+	for i in range(len(V_goal)):
+		x_g_i = V_goal[i]
+		x_cost_i = get_vertex_cost(x_g_i, x_goal)
+		J.append((x_g_i, x_cost_i))
+
+	J.sort(key=lambda tup: tup[1])
+	return J
+
+def reconstruct_path(E, x_goalarea):
+	path = [x_init]
+	current = x_goalarea
+	if x_init == x_goalarea:
+		return path
+
+
+
+def cal_results(A, E_prime, T_arrival):
+
+	(x_goalarea, x_goal) = E_prime[-1]
+	(p_goalarea, _) = x_goalarea
+	(p_goal, _) = x_goal
+	D_2 = np.linalg.norm(p_goal - p_goalarea)/3
+	T_1 = T_arrival * R / (N_prim * R + 3 * D_2)
+	X_set = get_primitive_set(x_init, T_1)
+	visualize_tree(E_prime)
+	return 0., 0., 0.
+
+def get_results(A, G, J, x_goal, T_arrival):
+	(V, V_goal, E) = G
+	V_prime = V
+	E_prime = E
+	for i in range(len(J)):
+		(x_ga_i, x_ga_i_cost) = J[i]
+		if not is_collision(x_ga_i, x_goal):
+			V_prime.append(x_goal)
+			E_prime.append((x_ga_i, x_goal))
+			P_path, V_iner, D_esti = cal_results(A, E_prime, T_arrival)
+			return (P_path, V_iner, D_esti)
+	return None
 
 def RRT():
 	i = 0
@@ -130,16 +200,17 @@ def RRT():
 	V = [(p_init, e_init)]
 	V_goal = []
 	E = []
-	G = []
 
 	while i < N_sample:
-		G.append((V, V_goal, E))
+		G = (V, V_goal, E)
 		p_rand = get_sample(i)
 		i += 1
 		V, V_goal, E = extend_tree(G, p_rand)
 
-	print(V)
-	# J = get_cost(G, X_goal)
-	# P_path, V_iner, D_est = get_results(A, G, J, X_goal, T_arrival)
+	# visualize_tree(E)
+	J = get_cost(G, x_goal)
+	result = get_results(A, G, J, x_goal, T_arrival)
+	if result:
+		(P_path, V_iner, D_est) = result
 
 RRT()
