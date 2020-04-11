@@ -2,9 +2,9 @@
 import bezier
 import numpy as np
 import matplotlib.pyplot as plt
-
 from collections import namedtuple
 
+from graph import Graph
 ##### Aircraft Specification ######
 AircraftParams = namedtuple('Aircraft_Params', 
 	['mass', 'Sref', 'Cl_0', 'Cl_alpha', 'CD_0', 'K'])
@@ -17,8 +17,8 @@ K = 1. # (C_D - C_D_0) / C_L^2
 A = AircraftParams(m, S_ref, C_L_0, C_L_alpha, C_D_0, K)
 
 ##### Motion Primitive Set #####
-R_prim = 80. # Radius of curvature in m
-V_max = 30. # Max veocity in m/s
+R_prim = 70. # Radius of curvature in m
+V_max = 25. # Max veocity in m/s
 a_max = 9.81 # Max acceleration in m/s^2
 R_min = V_max**2/a_max # Minimum turning radius
 theta_1_set = np.radians(-25 + 5. * np.arange(10)) # In radians
@@ -27,12 +27,12 @@ N_prim = 3
 
 ##### Waypoints #####
 p_init = np.array([0,0]).reshape(2, 1)
-e_init = np.array([0., -1.]).reshape(2, 1)
+e_init = np.array([0., 1.]).reshape(2, 1)
 X_init = (p_init, e_init)
 p_goal = np.array([400,500.]).reshape(2, 1)
 X_goal = (p_goal, e_init)
 T_arrival = 10.
-R_goal = 100.
+R_goal = 50.
 D_1 = R_prim / 3
 
 ##### Cost #####
@@ -40,11 +40,12 @@ c1 = 1.
 c2 = 1.
 c3 = 1.
 
-##### Constants #####
-N_sample = 500
-
-
-Graph = namedtuple("Graph", ["V", "V_goal", "E"])
+##### Globals and Constants #####
+N_sample = 2500
+bias_prob = 0.2
+obstacles = [
+	(80,300,150), 
+	(200,10,150) ]
 
 # Algorithm 1 from the paper
 def main():
@@ -57,7 +58,7 @@ def main():
 	V = {x2t(X_init)}
 	V_goalarea = set()
 	E = set()
-	G = Graph(V, V_goalarea, E)
+	G = (V, V_goalarea, E)
 	for i in range(N_sample):
 		G = (V, V_goalarea, E)
 		p_rand = get_sample(i)
@@ -65,33 +66,66 @@ def main():
 		# if V_goalarea:
 		# 	print(V_goalarea)
 
-	visualize_G(G)
+	print(len(V_goalarea))
+	paths_list = []
+	for V_ga in V_goalarea:
+		paths= get_paths(V, E, V_ga)
+		for p in paths:
+			if len(p) > 0:
+				paths_list.append(p)
+	shortest = sorted(paths_list, key=lambda l: len(l))
+	fig, ax = plt.subplots()
+
+	visualize_G(ax, G, path=shortest[0])
+	visualize_obstacles(ax, obstacles)
+	plt.axis("equal")
+	plt.show()
 	# J = get_cost(G, X_goal)
 	# P_path, V_iner, D_est = get_results(A, G, J, X_goal, T_arrival)
 
-def visualize_splines(ax, E):
-	for (t1, t2) in E:
-		pi, ei = t2x(t1)
-		pf, ef = t2x(t2)
-		p1 = pi + D_1 * ei
-		p2 = pf - D_1 * ef
-		nodes = np.concatenate([pi, p1, p2, pf], axis=1)
-		curve = bezier.Curve(nodes.T, degree=4)
-		curve.plot(5, color="r", ax=ax)
+def _get_bezier_curve(x1, x2):
+	pi, ei = x1
+	pf, ef = x2
+	p1 = pi + D_1 * ei
+	p2 = pf - D_1 * ef
+	nodes = np.concatenate([pi, p1, p2, pf], axis=1)
+	return bezier.Curve(nodes.T, degree=4)
 
-def visualize_G(G):
+def visualize_splines(ax, E, color="r", alpha=0.3):
+	for (t1, t2) in E:
+		curve = _get_bezier_curve(t2x(t1), t2x(t2))
+		curve.plot(20, color=color,  alpha=alpha, ax=ax)
+
+def visualize_obstacles(ax, obstacles, color="orange", alpha=0.7):
+	for (x, y, r) in obstacles:
+		circle = plt.Circle((x, y), r, color=color, alpha=alpha, fill=True)
+		ax.add_artist(circle)
+
+def visualize_G(ax, G, path):
 	V, V_goalarea, E = G
 	points = []
 	for (p, e) in V:
 		points.append(p)
-
 	points = np.asarray(points)
-	fig, ax = plt.subplots()
-	ax.plot(points[:, 0], points[:, 1], "r.")
+	ax.plot(points[:, 0], points[:, 1], "r.", alpha=0.3)
 	ax.plot(p_init[0], p_init[1], "go")
 	ax.plot(p_goal[0], p_goal[1], "bo")
+
+	E_path = set()
+	for i in range(len(path) - 2):
+		E_path.add((path[i], path[i+1]))
+	E_path.add((path[len(path) - 2], x2t(X_goal)))
+
+	points = []
+	for (p, e) in path[:-1]:
+		points.append(p)
+	points.append(x2t(X_goal)[0])
+	points = np.asarray(points)
+	ax.plot(points[:, 0], points[:, 1], "g.")
+
 	visualize_splines(ax, E)
-	plt.show()
+	visualize_splines(ax, E_path, color="g", alpha=1)
+	
 
 # Equation (2) from the paper
 def _bezier(P, T):
@@ -211,12 +245,20 @@ def get_new_vertex(p_ref, X_set):
 
 def is_obstacle_free(x_1, x_2):
 	# TODO: Obstacle checker
+	curve = _get_bezier_curve(x_1, x_2)
+	s_vals = np.linspace(0.0, 1.0, 30)
+	samples = curve.evaluate_multi(s_vals)
+
+	for o in obstacles:
+		for s in samples:
+			if _get_dist(s, np.asarray([o[0], o[1]])) < o[2]:
+				return False
 	return True
 
 def get_sample(i):
+	if np.random.rand() < bias_prob:
+		return X_goal[0]
 	return 1000 * (np.random.rand(2,1) - 0.5)
-
-
 
 def get_cost(G, X_goal):
 	J = set()
@@ -244,7 +286,7 @@ def tree_depth(x):
 	# TODO: Implement this
 	return 0.5
 
-def get_results(A, G, J, X_goal, T_arrival):
+def get_results(A, G, J):
 	V_prime, _, E_prime = G
 	for j in J:
 		X_goalarea = t2x(j[0])
@@ -254,4 +296,15 @@ def get_results(A, G, J, X_goal, T_arrival):
 			return cal_results(A, E_prime, T_arrival)
 	raise Exception("No Path found.")
 
+def get_paths(V, E, X_goalarea):
+    V_list = list(V)
+    V_dict = {k: v for v, k in enumerate(V_list)}
+    graph = Graph(len(V_list))
+    for (x1, x2) in E:
+    	graph.add_edge(V_dict[x1], V_dict[x2])
+    paths = graph.get_all_paths(V_dict[x2t(X_init)], V_dict[X_goalarea])
+    return list(map(lambda path: list(map(lambda i: V_list[i], path)), paths))
+
 main()
+
+
