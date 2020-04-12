@@ -1,4 +1,5 @@
 # TODO: Start using rtrees for maintaining the graph
+import time
 import bezier
 import numpy as np
 import matplotlib.pyplot as plt
@@ -17,13 +18,15 @@ K = 1. # (C_D - C_D_0) / C_L^2
 A = AircraftParams(m, S_ref, C_L_0, C_L_alpha, C_D_0, K)
 
 ##### Motion Primitive Set #####
-R_prim = 70. # Radius of curvature in m
 V_max = 25. # Max veocity in m/s
 a_max = 9.81 # Max acceleration in m/s^2
 R_min = V_max**2/a_max # Minimum turning radius
+R_max = 500
 theta_1_set = np.radians(-25 + 5. * np.arange(10)) # In radians
 theta_2_set = np.radians(-50 + 10. * np.arange(10)) # In radians
 N_prim = 3
+R_set = np.arange(R_min, R_max, step=20)
+
 
 ##### Waypoints #####
 p_init = np.array([0,0]).reshape(2, 1)
@@ -32,8 +35,8 @@ X_init = (p_init, e_init)
 p_goal = np.array([400,500.]).reshape(2, 1)
 X_goal = (p_goal, e_init)
 T_arrival = 10.
-R_goal = 50.
-D_1 = R_prim / 3
+R_goal = 90.
+D_1 = V_max #R_prim / 3
 
 ##### Cost #####
 c1 = 1.
@@ -41,11 +44,28 @@ c2 = 1.
 c3 = 1.
 
 ##### Globals and Constants #####
-N_sample = 2500
-bias_prob = 0.2
+N_sample = 1000
+bias_prob = 0.6
 obstacles = [
 	(80,300,150), 
 	(200,10,150) ]
+
+def _choose_best_path(path_list):
+	best_path = None
+	best_i = -1
+	shortest_distance = float('Inf')
+	for idx, path in enumerate(path_list):
+		distance = 0
+		for i in range(len(path) - 2):
+			X_1 = t2x(path[i])
+			X_2 = t2x(path[i + 1])
+			distance += _get_dist(X_1[0], X_2[0])
+		if distance <= shortest_distance:
+			best_i = idx
+			best_path = path
+			shortest_distance = distance
+	return best_path
+
 
 # Algorithm 1 from the paper
 def main():
@@ -55,6 +75,7 @@ def main():
 		X_goal: (p_goal, e_goal)
 		T_arrival: int - Time taken to arive at goal
 	"""
+	start = time.time()
 	V = {x2t(X_init)}
 	V_goalarea = set()
 	E = set()
@@ -63,20 +84,24 @@ def main():
 		G = (V, V_goalarea, E)
 		p_rand = get_sample(i)
 		V, V_goalarea, E = extend_tree(G, p_rand)
-		# if V_goalarea:
-		# 	print(V_goalarea)
 
-	print(len(V_goalarea))
 	paths_list = []
 	for V_ga in V_goalarea:
 		paths= get_paths(V, E, V_ga)
 		for p in paths:
 			if len(p) > 0:
 				paths_list.append(p)
-	shortest = sorted(paths_list, key=lambda l: len(l))
-	fig, ax = plt.subplots()
 
-	visualize_G(ax, G, path=shortest[0])
+	best_path = _choose_best_path(paths_list)
+	print("Total time taken with {}: {}".format(N_sample, time.time() - start))
+
+	if best_path is None:
+		print("Couldn't find any path.")
+		return
+	print("Found {} paths.".format(len(paths_list)))
+	print("PLOTTING")
+	fig, ax = plt.subplots()
+	visualize_G(ax, G, path=best_path)
 	visualize_obstacles(ax, obstacles)
 	plt.axis("equal")
 	plt.show()
@@ -91,6 +116,7 @@ def _get_bezier_curve(x1, x2):
 	nodes = np.concatenate([pi, p1, p2, pf], axis=1)
 	return bezier.Curve(nodes.T, degree=4)
 
+
 def visualize_splines(ax, E, color="r", alpha=0.3):
 	for (t1, t2) in E:
 		curve = _get_bezier_curve(t2x(t1), t2x(t2))
@@ -100,6 +126,32 @@ def visualize_obstacles(ax, obstacles, color="orange", alpha=0.7):
 	for (x, y, r) in obstacles:
 		circle = plt.Circle((x, y), r, color=color, alpha=alpha, fill=True)
 		ax.add_artist(circle)
+
+def visualize_primitive_set():
+	(p_init, e_init) = X_init
+	t = np.linspace(0, T_arrival, 100)
+	
+	fig, ax = plt.subplots()
+
+	for R in R_set:
+		circle1 = plt.Circle((p_init[0], p_init[1]), R, color='r', fill=False)
+		ax.add_artist(circle1)
+
+	orth_e_i = np.array([-e_init[1], e_init[0]])
+	min_turn_center = p_init - orth_e_i * R_min
+	min_turn_1 = plt.Circle((min_turn_center[0], min_turn_center[1]), R_min, color='g', fill=False)
+	min_turn_center = p_init + orth_e_i * R_min
+	min_turn_2 = plt.Circle((min_turn_center[0], min_turn_center[1]), R_min, color='g', fill=False)
+	ax.add_artist(min_turn_1)
+	ax.add_artist(min_turn_2)
+
+	X_set = get_primitive_set(X_init)
+	E = map(lambda X: (x2t(X_init), X), X_set)
+	visualize_splines(ax, E)
+
+	plt.axis("equal")
+	plt.gca().set_xlim(-R_min, R_min)
+	plt.show()
 
 def visualize_G(ax, G, path):
 	V, V_goalarea, E = G
@@ -136,7 +188,7 @@ def _bezier(P, T):
 	return lambda t: P[0] + 3*t*(P[1]-P[0])/T + 3*t**2*(P[2]-2*P[1]+P[0])/T**2 + \
 					 t**3*(3*P[1]-3*P[2]+P[3]-P[0])/T**3
 
-def _get_primitive(X, theta_1, theta_2):
+def _get_primitive(X, R_prim, theta_1, theta_2):
 	(P_i, e_i) = X
 	
 	P_1 = P_i + D_1 * e_i
@@ -152,43 +204,12 @@ def _get_primitive(X, theta_1, theta_2):
 
 def get_primitive_set(X):
 	X_set = set()
-	for i in range(len(theta_1_set)):
-		P, e = _get_primitive(X, theta_1_set[i], theta_2_set[i])
-		X_set.add(x2t((P[-1], e)))
+	for R in R_set:
+		for i in range(len(theta_1_set)):
+			P, e = _get_primitive(X, R, theta_1_set[i], theta_2_set[i])
+			X_set.add(x2t((P[-1], e)))
 	return X_set
 
-def gen_curve(x_i, theta_1, theta_2):
-	P, _ = _get_primitive(x_i, theta_1, theta_2)
-	return _bezier(P, T)
-
-def visualize_motion_prim_set():
-	(p_init, e_init) = X_init
-	t = np.linspace(0, T_arrival, 100)
-	
-	circle1 = plt.Circle((p_init[0], p_init[1]), R_prim, color='r', fill=False)
-	orth_e_i = np.array([-e_init[1], e_init[0]])
-	min_turn_center = p_init - orth_e_i * R_min
-	min_turn_1 = plt.Circle((min_turn_center[0], min_turn_center[1]), R_min, color='g', fill=False)
-	min_turn_center = p_init + orth_e_i * R_min
-	min_turn_2 = plt.Circle((min_turn_center[0], min_turn_center[1]), R_min, color='g', fill=False)
-	
-	fig, ax = plt.subplots()
-	ax.add_artist(circle1)
-	ax.add_artist(min_turn_1)
-	ax.add_artist(min_turn_2)
-
-	for i in range(len(theta_1_set)):
-		c = gen_curve(X_init, theta_1_set[i], theta_2_set[i])
-		curve = c(t)
-		ax.plot(curve[0], curve[1], "b-")
-
-	plt.axis("equal")
-	plt.gca().set_xlim(-R_min, R_min)
-	plt.show()
-
-# Uncomment to see the Motion primitve set paths
-# visualize_motion_prim_set(X_init, R_prim, R_min, T_arrival, theta_1_set, theta_2_set)
-# print(get_primitive_set(X_init, T_arrival, R_prim, theta_1_set, theta_2_set)[0])
 
 def x2t(x):
 	p, e = x
@@ -234,9 +255,9 @@ def get_nearest(V, p_rand):
 	return (p_nearest, e_nearest)
 
 def steer(p_nearest, p_rand):
-	dist = _get_dist(p_nearest, p_rand)
-	if dist > R_prim:
-		return p_nearest + (p_rand - p_nearest) * R_prim / dist
+	# dist = _get_dist(p_nearest, p_rand)
+	# if dist > R_prim:
+	# 	return p_nearest + (p_rand - p_nearest) * R_prim / dist
 	return p_rand
 
 def get_new_vertex(p_ref, X_set):
@@ -305,6 +326,7 @@ def get_paths(V, E, X_goalarea):
     paths = graph.get_all_paths(V_dict[x2t(X_init)], V_dict[X_goalarea])
     return list(map(lambda path: list(map(lambda i: V_list[i], path)), paths))
 
+# visualize_primitive_set()
 main()
 
 
