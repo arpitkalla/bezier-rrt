@@ -3,29 +3,29 @@ import time
 import bezier
 import numpy as np
 import matplotlib.pyplot as plt
-from collections import namedtuple
 
 from graph import Graph
 ##### Aircraft Specification ######
-AircraftParams = namedtuple('Aircraft_Params', 
-	['mass', 'Sref', 'Cl_0', 'Cl_alpha', 'CD_0', 'K'])
 m = 1. # Total mass
 S_ref = 1. # Reference Area
 C_L_0 = 1. # Lift coefficient at zero ange of attack
 C_L_alpha = 1. # Lift curve slope
 C_D_0 = 1. # Drag coefficient at zero lift coefficient
 K = 1. # (C_D - C_D_0) / C_L^2
-A = AircraftParams(m, S_ref, C_L_0, C_L_alpha, C_D_0, K)
+A = (m, S_ref, C_L_0, C_L_alpha, C_D_0, K)
 
 ##### Motion Primitive Set #####
+theta_num = 20
+theta_1_max = 50
+theta_2_max = 90
+theta_1_set = np.radians(np.linspace(-theta_1_max, theta_1_max, num=theta_num))
+theta_2_set = np.radians(np.linspace(-theta_2_max, theta_2_max, num=theta_num))
+
 V_max = 25. # Max veocity in m/s
 a_max = 9.81 # Max acceleration in m/s^2
 R_min = V_max**2/a_max # Minimum turning radius
-R_max = 500
-theta_1_set = np.radians(-25 + 5. * np.arange(10)) # In radians
-theta_2_set = np.radians(-50 + 10. * np.arange(10)) # In radians
-N_prim = 3
-R_set = np.arange(R_min, R_max, step=20)
+R_max = 5 * R_min
+R_set = [2 * R_min] #np.arange(R_min, R_max, step=20)
 
 
 ##### Waypoints #####
@@ -44,7 +44,7 @@ c2 = 1.
 c3 = 1.
 
 ##### Globals and Constants #####
-N_sample = 1000
+N_sample = 2000
 bias_prob = 0.6
 obstacles = [
 	(80,300,150), 
@@ -70,7 +70,7 @@ def _choose_best_path(path_list):
 # Algorithm 1 from the paper
 def main():
 	"""
-		A: AircraftParams
+		A: tuple of plane parameters
 		X_init: (p_init, e_init)
 		X_goal: (p_goal, e_goal)
 		T_arrival: int - Time taken to arive at goal
@@ -114,7 +114,7 @@ def _get_bezier_curve(x1, x2):
 	p1 = pi + D_1 * ei
 	p2 = pf - D_1 * ef
 	nodes = np.concatenate([pi, p1, p2, pf], axis=1)
-	return bezier.Curve(nodes.T, degree=4)
+	return bezier.Curve(nodes, degree=3)
 
 
 def visualize_splines(ax, E, color="r", alpha=0.3):
@@ -203,6 +203,8 @@ def _get_primitive(X, R_prim, theta_1, theta_2):
 	return [P_i, P_1, P_2, P_f], e_f
 
 def get_primitive_set(X):
+	# TODO: Some of them should be disallowed
+	#       Anything inside the min radius circle
 	X_set = set()
 	for R in R_set:
 		for i in range(len(theta_1_set)):
@@ -268,7 +270,7 @@ def is_obstacle_free(x_1, x_2):
 	# TODO: Obstacle checker
 	curve = _get_bezier_curve(x_1, x_2)
 	s_vals = np.linspace(0.0, 1.0, 30)
-	samples = curve.evaluate_multi(s_vals)
+	samples = curve.evaluate_multi(s_vals).T
 
 	for o in obstacles:
 		for s in samples:
@@ -326,7 +328,6 @@ def get_paths(V, E, X_goalarea):
     paths = graph.get_all_paths(V_dict[x2t(X_init)], V_dict[X_goalarea])
     return list(map(lambda path: list(map(lambda i: V_list[i], path)), paths))
 
-# visualize_primitive_set()
 main()
 
 
